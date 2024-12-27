@@ -53,7 +53,7 @@ class ClientController extends Controller
         $cleanPhone = preg_replace('/\D/', '', $request->phone);
 
         $client = Client::create([
-            'name' => $request->company_name,
+            'name' => $request->name,
             'contact_person' => $request->contact_person,
             'phone' => $cleanPhone,
             'email' => $request->email,

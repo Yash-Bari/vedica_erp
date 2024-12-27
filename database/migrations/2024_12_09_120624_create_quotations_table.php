@@ -10,14 +10,21 @@ return new class extends Migration
     {
         Schema::create('quotations', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('project_id')->constrained()->onDelete('cascade');
-            $table->foreignId('client_id')->constrained()->onDelete('cascade');
+            $table->unsignedBigInteger('project_id');
+            $table->unsignedBigInteger('client_id');
             $table->decimal('total_amount', 10, 2);
             $table->text('notes')->nullable();
-            $table->foreignId('created_by')->constrained('users')->onDelete('cascade');
+            $table->unsignedBigInteger('created_by');
             $table->string('status')->default('Pending');
             $table->timestamps();
             $table->softDeletes();
+        });
+
+        // Add foreign key constraints after all tables are created
+        Schema::table('quotations', function (Blueprint $table) {
+            $table->foreign('project_id')->references('id')->on('projects')->onDelete('cascade');
+            $table->foreign('client_id')->references('id')->on('clients')->onDelete('cascade');
+            $table->foreign('created_by')->references('id')->on('users')->onDelete('cascade');
         });
     }
 

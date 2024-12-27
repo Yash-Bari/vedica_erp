@@ -12,7 +12,7 @@
                 {{-- Machine Name --}}
                 <div>
                     <label for="name" class="block text-sm font-medium text-gray-700">
-                        Machine Name <span class="text-red-500">*</span>
+                        Machine Number <span class="text-red-500">*</span>
                     </label>
                     <input type="text" id="name" name="name" 
                         value="{{ old('name') }}"

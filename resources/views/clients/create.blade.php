@@ -23,7 +23,7 @@
             
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label for="name" class="block text-sm font-medium text-gray-700">Client Name *</label>
+                    <label for="name" class="block text-sm font-medium text-gray-700">Firm Name *</label>
                     <input type="text" name="name" id="name" required 
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200"
                            value="{{ old('name') }}">

@@ -12,21 +12,12 @@ class OperatorController extends Controller
     {
         $operator = Auth::user();
 
-        // Current Active Project
-        $currentProject = Project::where('operator_id', $operator->id)
-            ->where('status', 'In Progress')
-            ->first();
-
-        // Project History
-        $projectHistory = Project::where('operator_id', $operator->id)
+        // Get assigned projects
+        $assignedProjects = Project::where('operator_id', $operator->id)
             ->orderBy('created_at', 'desc')
-            ->take(5)
             ->get();
 
-        return view('operator.dashboard', [
-            'currentProject' => $currentProject,
-            'projectHistory' => $projectHistory
-        ]);
+        return view('operator.dashboard', compact('assignedProjects'));
     }
 
     public function startProject(Request $request, $projectId)

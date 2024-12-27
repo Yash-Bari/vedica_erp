@@ -126,12 +126,7 @@
                         </div>
                     </div>
 
-                    @if($project->status === 'in_progress')
-                        <div class="mt-4 p-4 bg-gray-50 rounded-md">
-                            <h4 class="font-medium mb-2">Current Session</h4>
-                            <div id="timer-{{ $project->id }}" class="text-2xl font-bold">00:00:00</div>
-                        </div>
-                    @endif
+                    
                 </div>
             @endforeach
         @else
