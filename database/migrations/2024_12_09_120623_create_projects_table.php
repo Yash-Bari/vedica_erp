@@ -54,12 +54,8 @@ class CreateProjectsTable extends Migration
                 
                 // Status Tracking
                 $table->enum('status', [
-                    'Active', 
-                    'Maintenance', 
-                    'Inactive', 
-                    'Repair', 
                     'Available', 
-                    'In Use'
+                    'Unavailable',
                 ])->default('Available');
                 
                 // Financial Details

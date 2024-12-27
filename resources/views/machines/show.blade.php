@@ -103,7 +103,7 @@
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700">Purchase Date</label>
                     <p class="mt-1 text-lg text-gray-900">
-                        {{ $machine->purchase_date ? $machine->purchase_date->format('d M Y') : 'N/A' }}
+                        {{ $machine->purchase_date ? date('d M Y', strtotime($machine->purchase_date)) : 'N/A' }}
                     </p>
                 </div>
 
@@ -155,7 +155,7 @@
                 <div>
                     <label class="block text-sm font-medium text-gray-700">Last Maintenance Date</label>
                     <p class="mt-1 text-lg text-gray-900">
-                        {{ $machine->last_maintenance_date ? $machine->last_maintenance_date->format('d M Y') : 'No Maintenance Recorded' }}
+                        {{ $machine->last_maintenance_date ? date('d M Y', strtotime($machine->last_maintenance_date)) : 'N/A' }}
                     </p>
                 </div>
             </div>

@@ -26,10 +26,10 @@
                                 @foreach($employees as $employee)
                                 <tr>
                                     <td>{{ $employee->id }}</td>
-                                    <td>{{ $employee->name }}</td>
+                                    <td>{{ $employee->full_name }}</td>
                                     <td>{{ $employee->email }}</td>
                                     <td>{{ $employee->role }}</td>
-                                    <td>{{ $employee->phone }}</td>
+                                    <td>{{ $employee->phone_number }}</td>
                                     <td>
                                         <span class="badge badge-{{ $employee->status == 'Active' ? 'success' : 'danger' }}">
                                             {{ $employee->status }}

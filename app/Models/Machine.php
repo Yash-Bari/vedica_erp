@@ -58,9 +58,16 @@ class Machine extends Model
         'notes'
     ];
 
+    protected $casts = [
+        'purchase_date' => 'date',
+        'last_maintenance_date' => 'date',
+        'purchase_price' => 'decimal:2',
+        'operating_weight' => 'decimal:2',
+        'fuel_capacity' => 'decimal:2',
+        'year_of_manufacture' => 'integer'
+    ];
+
     protected $dates = [
-        'purchase_date', 
-        'last_maintenance_date',
         'deleted_at'
     ];
 
