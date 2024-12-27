@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class Project extends Model
 {
@@ -98,17 +100,9 @@ class Project extends Model
     /**
      * Relationship with Project Time Logs
      */
-    public function timeLogs()
+    public function time_logs()
     {
         return $this->hasMany(ProjectTimeLog::class);
-    }
-
-    /**
-     * Alias for compatibility
-     */
-    public function timeLog()
-    {
-        return $this->timeLogs();
     }
 
     /**
@@ -125,6 +119,17 @@ class Project extends Model
     public function attachments()
     {
         return $this->hasMany(ProjectAttachment::class);
+    }
+
+    /**
+     * Get current time log attribute
+     */
+    public function getCurrentTimeLogAttribute()
+    {
+        return $this->time_logs()
+            ->whereIn('status', ['in_progress', 'on_hold'])
+            ->latest()
+            ->first();
     }
 
     /**
@@ -248,15 +253,84 @@ class Project extends Model
      */
     public function updateTotalsFromLogs()
     {
-        $totals = $this->timeLog()
-            ->selectRaw('SUM(total_hours) as total_hours, SUM(revenue) as total_revenue')
-            ->first();
+        $logs = DB::table('project_time_logs')
+            ->where('project_id', $this->id)
+            ->where('status', 'completed')
+            ->get();
 
-        $this->update([
-            'total_hours' => $totals->total_hours ?? 0,
-            'total_revenue' => $totals->total_revenue ?? 0
+        $totalHours = 0;
+        $totalRevenue = 0;
+
+        foreach ($logs as $log) {
+            $totalHours += $log->total_hours;
+            // Calculate revenue for each log based on its hours
+            $logRevenue = ($log->total_hours * $this->hourly_rate);
+            $totalRevenue += $logRevenue;
+            
+            Log::info('Log revenue calculation', [
+                'log_id' => $log->id,
+                'total_hours' => $log->total_hours,
+                'hourly_rate' => $this->hourly_rate,
+                'calculated_revenue' => $logRevenue
+            ]);
+        }
+
+        $oldTotalHours = $this->total_hours;
+        $oldTotalRevenue = $this->total_revenue;
+
+        $this->total_hours = round($totalHours, 2);
+        $this->total_revenue = round($totalRevenue, 2);
+        $this->save();
+
+        Log::info('Project totals updated', [
+            'project_id' => $this->id,
+            'project_name' => $this->name,
+            'old_total_hours' => $oldTotalHours,
+            'new_total_hours' => $this->total_hours,
+            'old_total_revenue' => $oldTotalRevenue,
+            'new_total_revenue' => $this->total_revenue,
+            'number_of_logs' => count($logs),
+            'hourly_rate' => $this->hourly_rate
         ]);
+    }
 
-        return $this;
+    /**
+     * Calculate revenue for given minutes
+     */
+    public function calculateRevenueForMinutes($minutes)
+    {
+        // Convert minutes to decimal hours
+        $hours = $minutes / 60;
+        
+        // Calculate revenue based on hours worked
+        $revenue = $hours * $this->hourly_rate;
+        
+        Log::info('Revenue calculation details', [
+            'project_id' => $this->id,
+            'project_name' => $this->name,
+            'minutes_worked' => $minutes,
+            'hours_worked' => $hours,
+            'hourly_rate' => $this->hourly_rate,
+            'calculated_revenue' => $revenue,
+            'final_revenue' => round($revenue, 2)
+        ]);
+        
+        return round($revenue, 2);
+    }
+
+    /**
+     * Get the per-minute rate for the project
+     */
+    public function getMinuteRateAttribute()
+    {
+        return round($this->hourly_rate / 60, 2);
+    }
+
+    /**
+     * Get the total minutes worked on the project
+     */
+    public function getTotalMinutesAttribute()
+    {
+        return round($this->total_hours * 60);
     }
 }

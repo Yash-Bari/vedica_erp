@@ -32,12 +32,9 @@ class Machine extends Model
 
     // Machine Status Enum
     public const STATUS = [
-        'Active' => 'Active', 
-        'Maintenance' => 'Maintenance', 
-        'Inactive' => 'Inactive', 
-        'Repair' => 'Repair', 
+        
         'Available' => 'Available', 
-        'In Use' => 'In Use'
+        'Unavailable' => 'Unavailable'
     ];
 
     protected $fillable = [
@@ -55,20 +52,19 @@ class Machine extends Model
         'operating_weight',
         'fuel_capacity',
         'current_location',
-        'notes'
+        'notes',
+        'maintenance_need'
+    ];
+
+    protected $dates = [
+        'purchase_date', 
+        'last_maintenance_date',
+        'deleted_at'
     ];
 
     protected $casts = [
         'purchase_date' => 'date',
-        'last_maintenance_date' => 'date',
-        'purchase_price' => 'decimal:2',
-        'operating_weight' => 'decimal:2',
-        'fuel_capacity' => 'decimal:2',
-        'year_of_manufacture' => 'integer'
-    ];
-
-    protected $dates = [
-        'deleted_at'
+        'last_maintenance_date' => 'date'
     ];
 
     // Relationships

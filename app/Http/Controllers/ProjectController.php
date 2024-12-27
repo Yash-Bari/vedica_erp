@@ -251,7 +251,7 @@ class ProjectController extends Controller
             'client',
             'operator',
             'machine',
-            'timeLogs',
+            'time_logs',
             'attachments'
         ]);
 
@@ -522,7 +522,7 @@ class ProjectController extends Controller
             }
 
             // Create new time log entry
-            $project->timeLog()->create([
+            $project->time_logs()->create([
                 'start_time' => now(),
                 'meter_reading_start_image' => $imagePath,
                 'status' => 'in_progress',
@@ -566,7 +566,7 @@ class ProjectController extends Controller
             }
 
             // Find the last time log to update
-            $lastTimeLog = $project->timeLog()
+            $lastTimeLog = $project->time_logs()
                 ->latest()
                 ->first();
 
@@ -630,7 +630,7 @@ class ProjectController extends Controller
             }
 
             // Find the latest active time log
-            $timeLog = $project->timeLog()
+            $timeLog = $project->time_logs()
                 ->where('status', 'in_progress')
                 ->latest()
                 ->first();
@@ -769,7 +769,7 @@ class ProjectController extends Controller
             }
 
             // Find the latest time log
-            $timeLog = $project->timeLog()
+            $timeLog = $project->time_logs()
                 ->where('status', 'in_progress')
                 ->latest()
                 ->first();
@@ -879,7 +879,7 @@ class ProjectController extends Controller
         }
         
         // Get projects assigned to the operator
-        $assignedProjects = Project::with(['client', 'machine', 'attachments', 'timeLogs' => function($query) {
+        $assignedProjects = Project::with(['client', 'machine', 'attachments', 'time_logs' => function($query) {
             $query->latest();
         }])
         ->where('operator_id', $employee->id)
@@ -900,5 +900,43 @@ class ProjectController extends Controller
         }
 
         return Storage::download($attachment->file_path, $attachment->original_name);
+    }
+
+    /**
+     * Get the worked time for a project
+     */
+    public function getWorkedTime(Project $project)
+    {
+        $currentTimeLog = $project->currentTimeLog;
+        $response = ['success' => true];
+
+        if ($currentTimeLog && $currentTimeLog->status === 'in_progress') {
+            $startTime = $currentTimeLog->start_time;
+            $totalMinutes = 0;
+
+            if ($currentTimeLog->hold_time) {
+                // Add time from start to hold
+                $totalMinutes += $startTime->diffInMinutes($currentTimeLog->hold_time);
+                
+                // Add time from resume to now if resumed
+                if ($currentTimeLog->resume_time) {
+                    $totalMinutes += $currentTimeLog->resume_time->diffInMinutes(now());
+                }
+            } else {
+                // No hold time, calculate from start to now
+                $totalMinutes += $startTime->diffInMinutes(now());
+            }
+
+            $hours = floor($totalMinutes / 60);
+            $minutes = $totalMinutes % 60;
+            
+            $response['worked_time'] = sprintf('%02d:%02d', $hours, $minutes);
+            $response['total_minutes'] = $totalMinutes;
+        } else {
+            $response['worked_time'] = '00:00';
+            $response['total_minutes'] = 0;
+        }
+
+        return response()->json($response);
     }
 }

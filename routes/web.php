@@ -87,6 +87,7 @@ Route::middleware(['auth'])->group(function () {
     Route::resource('projects', ProjectController::class);
     Route::delete('/project-attachments/{attachment}', [ProjectController::class, 'deleteAttachment'])->name('project.attachments.delete');
     Route::get('/projects/attachments/{attachment}/download', [ProjectController::class, 'downloadAttachment'])->name('projects.download-attachment');
+    Route::get('/projects/{project}/worked-time', [ProjectController::class, 'getWorkedTime'])->name('projects.worked-time');
 
     // Client Management Routes
     Route::resource('clients', ClientController::class);

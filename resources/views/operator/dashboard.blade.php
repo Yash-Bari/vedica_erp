@@ -10,7 +10,9 @@
         
         @if($assignedProjects->count() > 0)
             @foreach($assignedProjects as $project)
-                <div class="border rounded-lg p-4 mb-4 {{ $project->status === 'in_progress' ? 'border-green-500' : 'border-gray-200' }}">
+                <div class="border rounded-lg p-4 mb-4 {{ $project->status === 'in_progress' ? 'border-green-500' : 'border-gray-200' }}"
+                     data-project-id="{{ $project->id }}"
+                     data-project-status="{{ $project->status }}">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <!-- Project Details -->
                         <div>
@@ -73,11 +75,18 @@
                                     </form>
                                 @endif
 
-                                @if($project->status === 'in_progress')
+                                @if($project->status === 'in_progress' || $project->status === 'on_hold')
                                     <div class="mb-4">
                                         <h4 class="font-medium mb-2">Time Worked</h4>
-                                        <div id="timer-{{ $project->id }}" class="text-lg font-bold text-green-600">00:00:00</div>
+                                        <div class="space-y-1">
+                                            <div class="text-lg font-bold {{ $project->status === 'in_progress' ? 'text-green-600' : 'text-yellow-600' }}">
+                                                <span id="time-display-{{ $project->id }}">00:00</span>
+                                            </div>
+                                        </div>
                                     </div>
+                                @endif
+
+                                @if($project->status === 'in_progress')
                                     <form action="{{ route('operator.hold-project', $project->id) }}" method="POST" enctype="multipart/form-data" class="mb-3">
                                         @csrf
                                         <div class="mb-3">
@@ -137,25 +146,37 @@
 
 @push('scripts')
 <script>
-    function startTimer(projectId) {
-        let seconds = 0;
-        const timerElement = document.getElementById('timer-' + projectId);
+    document.addEventListener('DOMContentLoaded', function() {
+        // Function to update time display for a project
+        function updateProjectTime(projectId) {
+            fetch(`/projects/${projectId}/worked-time`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const timeDisplay = document.querySelector(`#time-display-${projectId}`);
+                        if (timeDisplay) {
+                            timeDisplay.textContent = data.worked_time;
+                        }
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
 
-        setInterval(() => {
-            seconds++;
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = seconds % 60;
-            timerElement.innerText = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-        }, 1000);
-    }
-
-    document.addEventListener('DOMContentLoaded', () => {
-        @foreach($assignedProjects as $project)
-            @if($project->status === 'in_progress')
-                startTimer({{ $project->id }});
-            @endif
-        @endforeach
+        // Get all in-progress projects
+        const inProgressProjects = document.querySelectorAll('[data-project-status="in_progress"]');
+        
+        // Update time for each in-progress project every minute
+        inProgressProjects.forEach(project => {
+            const projectId = project.dataset.projectId;
+            
+            // Initial update
+            updateProjectTime(projectId);
+            
+            // Update every minute
+            setInterval(() => {
+                updateProjectTime(projectId);
+            }, 60000); // 60000 ms = 1 minute
+        });
     });
 </script>
 @endpush

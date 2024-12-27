@@ -148,7 +148,7 @@
                         Purchase Date
                     </label>
                     <input type="date" id="purchase_date" name="purchase_date" 
-                        value="{{ old('purchase_date', $machine->purchase_date ?? '') }}"
+                        value="{{ old('purchase_date', $machine->purchase_date ? $machine->purchase_date->format('Y-m-d') : '') }}"
                         class="mt-1 block w-full rounded-md border-gray-300 @error('purchase_date') border-red-500 @enderror" />
                     @error('purchase_date')
                         <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
@@ -157,19 +157,6 @@
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {{-- Last Maintenance Date --}}
-                <div>
-                    <label for="last_maintenance_date" class="block text-sm font-medium text-gray-700">
-                        Last Maintenance Date
-                    </label>
-                    <input type="date" id="last_maintenance_date" name="last_maintenance_date" 
-                        value="{{ old('last_maintenance_date', $machine->last_maintenance_date ?? '') }}"
-                        class="mt-1 block w-full rounded-md border-gray-300 @error('last_maintenance_date') border-red-500 @enderror" />
-                    @error('last_maintenance_date')
-                        <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
-                    @enderror
-                </div>
-
                 {{-- Manufacturer --}}
                 <div>
                     <label for="manufacturer" class="block text-sm font-medium text-gray-700">
@@ -183,9 +170,7 @@
                         <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
                     @enderror
                 </div>
-            </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {{-- Year of Manufacture --}}
                 <div>
                     <label for="year_of_manufacture" class="block text-sm font-medium text-gray-700">
@@ -200,7 +185,9 @@
                         <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
                     @enderror
                 </div>
+            </div>
 
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {{-- Operating Weight --}}
                 <div>
                     <label for="operating_weight" class="block text-sm font-medium text-gray-700">
@@ -214,9 +201,7 @@
                         <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
                     @enderror
                 </div>
-            </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {{-- Fuel Capacity --}}
                 <div>
                     <label for="fuel_capacity" class="block text-sm font-medium text-gray-700">
@@ -230,7 +215,9 @@
                         <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
                     @enderror
                 </div>
+            </div>
 
+            <div class="grid grid-cols-1 gap-6">
                 {{-- Current Location --}}
                 <div>
                     <label for="current_location" class="block text-sm font-medium text-gray-700">
@@ -244,9 +231,7 @@
                         <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
                     @enderror
                 </div>
-            </div>
 
-            <div class="grid grid-cols-1 gap-6">
                 {{-- Notes --}}
                 <div>
                     <label for="notes" class="block text-sm font-medium text-gray-700">
