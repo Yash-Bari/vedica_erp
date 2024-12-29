@@ -3,606 +3,670 @@
 namespace App\Http\Controllers;
 
 use App\Models\Employee;
-use App\Models\SalaryPayment;
 use App\Models\SalaryStructure;
+use App\Models\SalaryPayment;
 use App\Models\SalaryReceipt;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Storage;
+use App\Services\SalaryReceiptService;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class SalaryController extends Controller
 {
-    public function index(Request $request)
+    /**
+     * Display the salary management index page.
+     */
+    public function index()
     {
-        // Authorize view of salary management
         $this->authorize('viewAny', SalaryStructure::class);
 
         // Base query for employees
         $query = Employee::with(['activeSalaryStructure']);
 
         // Apply status filter
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
+        if (request()->filled('status')) {
+            $query->where('status', request('status'));
         }
 
         // Apply role filter
-        if ($request->filled('role')) {
-            $query->where('role', $request->role);
+        if (request()->filled('role')) {
+            $query->where('role', request('role'));
         }
 
         // Paginate employees
         $employees = $query->paginate(15);
 
         // Get summary statistics
+        $totalEmployees = Employee::count();
         $activeEmployees = Employee::where('status', 'active')->count();
         $employeesWithSalaryStructure = Employee::whereHas('activeSalaryStructure')->count();
         
-        // Calculate total monthly payroll using the method from SalaryStructure model
+        // Get current month's payment statistics
+        $currentMonth = now()->month;
+        $currentYear = now()->year;
+        
+        $pendingPayments = Employee::where('status', 'active')
+            ->whereDoesntHave('salaryPayments', function($query) use ($currentMonth, $currentYear) {
+                $query->where('year', $currentYear)
+                      ->where('month', $currentMonth);
+            })->count();
+
+        $processedPayments = SalaryPayment::where('year', $currentYear)
+            ->where('month', $currentMonth)
+            ->count();
+
+        // Calculate pending payroll amount
+        $pendingPayrollAmount = Employee::where('status', 'active')
+            ->whereDoesntHave('salaryPayments', function($query) use ($currentMonth, $currentYear) {
+                $query->where('year', $currentYear)
+                      ->where('month', $currentMonth);
+            })
+            ->whereHas('activeSalaryStructure')
+            ->with('activeSalaryStructure')
+            ->get()
+            ->sum(function($employee) {
+                return $employee->activeSalaryStructure->calculateNetSalaryFromJson();
+            });
+        
+        // Calculate total monthly payroll
         $totalMonthlyPayroll = SalaryStructure::where('is_active', true)
             ->get()
-            ->sum(function($salaryStructure) {
-                return $salaryStructure->calculateNetSalary();
+            ->sum(function($structure) {
+                return $structure->calculateNetSalaryFromJson();
             });
 
-        // Get unique roles
+        // Get unique roles for filter dropdown
         $roles = Employee::distinct()->pluck('role');
+
+        // Get unique statuses for filter dropdown
+        $statuses = ['active', 'inactive', 'on_leave'];
 
         return view('salaries.index', compact(
             'employees', 
+            'totalEmployees',
             'activeEmployees', 
             'employeesWithSalaryStructure', 
+            'pendingPayments',
+            'processedPayments',
+            'pendingPayrollAmount',
             'totalMonthlyPayroll', 
-            'roles'
+            'roles',
+            'statuses'
         ));
     }
 
-    public function processSalary(Request $request)
+    /**
+     * Display a listing of salary payments.
+     */
+    public function paymentsIndex()
     {
-        // Authorize processing salaries
-        $this->authorize('processSalaries', SalaryPayment::class);
+        $payments = SalaryPayment::with(['employee', 'receipt'])
+            ->orderBy('created_at', 'desc')
+            ->paginate(15);
 
-        $validatedData = $request->validate([
-            'year' => 'required|integer|min:2020|max:2030',
-            'month' => 'required|in:January,February,March,April,May,June,July,August,September,October,November,December'
+        $totalPayments = SalaryPayment::count();
+        $currentMonthPayments = SalaryPayment::whereMonth('created_at', now()->month)
+            ->whereYear('created_at', now()->year)
+            ->count();
+        $pendingPayments = SalaryPayment::where('status', 'Pending')->count();
+        $totalAmount = SalaryPayment::where('status', 'Paid')->sum('net_salary');
+
+        return view('salaries.payments.index', compact(
+            'payments',
+            'totalPayments',
+            'currentMonthPayments',
+            'pendingPayments',
+            'totalAmount'
+        ));
+    }
+
+    /**
+     * Display a listing of salary structures.
+     */
+    public function structureIndex()
+    {
+        $this->authorize('viewAny', SalaryStructure::class);
+
+        $structures = SalaryStructure::with(['employee'])
+            ->orderBy('created_at', 'desc')
+            ->paginate(15);
+
+        return view('salaries.structures.index', compact('structures'));
+    }
+
+    /**
+     * Show form to create a new salary structure
+     */
+    public function structureCreate(Request $request)
+    {
+        $this->authorize('create', SalaryStructure::class);
+
+        $employee = null;
+        if ($request->has('employee_id')) {
+            $employee = Employee::findOrFail($request->employee_id);
+        }
+
+        // Get all active employees who don't have an active salary structure
+        $employees = Employee::where('status', 'active')
+            ->whereDoesntHave('salaryStructures', function($query) {
+                $query->where('is_active', true);
+            })
+            ->get();
+
+        return view('salaries.structure.create', compact('employee', 'employees'));
+    }
+
+    /**
+     * Show list of all salary payments
+     */
+    public function paymentsIndexList()
+    {
+        $this->authorize('viewAny', SalaryPayment::class);
+
+        $payments = SalaryPayment::with(['employee', 'salaryStructure'])
+            ->latest()
+            ->paginate(15);
+
+        return view('salaries.payments.index', compact('payments'));
+    }
+
+    /**
+     * Show the form for processing a salary payment.
+     */
+    public function processPayment(Employee $employee)
+    {
+        $this->authorize('process', SalaryPayment::class);
+
+        if (!$employee->activeSalaryStructure) {
+            return redirect()->route('salaries.index')
+                ->withErrors(['error' => 'Employee does not have an active salary structure.']);
+        }
+
+        // Check if salary is already processed for current month
+        $existingPayment = SalaryPayment::where('employee_id', $employee->id)
+            ->where('month', now()->format('F'))
+            ->where('year', now()->year)
+            ->first();
+
+        if ($existingPayment) {
+            return redirect()->route('salaries.payments.show', $existingPayment)
+                ->withErrors(['error' => 'Salary payment already exists for this month.']);
+        }
+
+        return view('salaries.payments.process', compact('employee'));
+    }
+
+    /**
+     * Store a new salary payment.
+     */
+    public function storePayment(Request $request, Employee $employee)
+    {
+        $this->authorize('process', SalaryPayment::class);
+
+        $validated = $request->validate([
+            'month' => 'required|string',
+            'year' => 'required|integer',
+            'days_worked' => 'required|integer|min:0|max:31',
+            'overtime_hours' => 'required|numeric|min:0',
+            'bonus' => 'required|numeric|min:0',
+            'allowances' => 'required|numeric|min:0',
+            'tax_deduction' => 'required|numeric|min:0',
+            'other_deductions' => 'required|numeric|min:0',
+            'payment_method' => 'required|in:Bank Transfer,Cash,Cheque'
         ]);
 
         try {
             DB::beginTransaction();
 
-            // Process salaries for all active employees
-            $result = SalaryPayment::processMonthlySalaries(
-                $validatedData['year'], 
-                $validatedData['month']
-            );
+            // Calculate salary components
+            $structure = $employee->activeSalaryStructure;
+            $dailyRate = $structure->base_salary / 22; // Standard working days
+            $basePay = $dailyRate * $validated['days_worked'];
+            $overtimePay = $validated['overtime_hours'] * $structure->hourly_rate * 1.5;
+            
+            $totalEarnings = $basePay + $overtimePay + $validated['bonus'] + $validated['allowances'];
+            $totalDeductions = $validated['tax_deduction'] + $validated['other_deductions'];
+            $netSalary = $totalEarnings - $totalDeductions;
+
+            // Create salary payment
+            $payment = SalaryPayment::create([
+                'employee_id' => $employee->id,
+                'month' => $validated['month'],
+                'year' => $validated['year'],
+                'base_salary' => $structure->base_salary,
+                'days_worked' => $validated['days_worked'],
+                'overtime_hours' => $validated['overtime_hours'],
+                'overtime_rate' => $structure->hourly_rate * 1.5,
+                'overtime_pay' => $overtimePay,
+                'bonus' => $validated['bonus'],
+                'additional_allowances' => $validated['allowances'],
+                'tax_deduction' => $validated['tax_deduction'],
+                'other_deductions' => $validated['other_deductions'],
+                'total_earnings' => $totalEarnings,
+                'total_deductions' => $totalDeductions,
+                'net_salary' => $netSalary,
+                'payment_method' => $validated['payment_method'],
+                'payment_date' => now(),
+                'status' => 'Paid'
+            ]);
+
+            // Generate receipt
+            $receiptService = app(SalaryReceiptService::class);
+            $receipt = $receiptService->generateReceipt($payment);
 
             DB::commit();
 
-            return redirect()->route('salaries.index')
-                ->with('success', "Salaries processed for {$validatedData['month']} {$validatedData['year']}");
+            return redirect()->route('salaries.payments.show', $payment)
+                ->with('success', 'Salary payment processed successfully.');
 
         } catch (\Exception $e) {
             DB::rollBack();
+            \Log::error('Failed to process salary payment: ' . $e->getMessage());
+            
             return redirect()->back()
-                ->withErrors(['error' => 'Failed to process salaries: ' . $e->getMessage()]);
+                ->withInput()
+                ->withErrors(['error' => 'Failed to process salary payment. Please try again.']);
         }
     }
 
-    public function markAsPaid(Request $request, $id)
+    /**
+     * Process bulk salary payments.
+     */
+    public function processBulkPayments()
     {
-        // Authorize marking salary as paid
-        $this->authorize('markAsPaid', SalaryPayment::class);
+        $this->authorize('processBulk', SalaryPayment::class);
 
-        $validatedData = $request->validate([
-            'payment_method' => 'required|in:Cash,Bank Transfer,Cheque'
-        ]);
+        $currentMonth = now()->month;
+        $currentYear = now()->year;
 
+        // Get all active employees with pending payments
+        $employees = Employee::where('status', 'active')
+            ->whereDoesntHave('salaryPayments', function($query) use ($currentMonth, $currentYear) {
+                $query->where('year', $currentYear)
+                      ->where('month', $currentMonth);
+            })
+            ->whereHas('activeSalaryStructure')
+            ->with('activeSalaryStructure')
+            ->get();
+
+        $processed = 0;
+        DB::beginTransaction();
+        
         try {
-            $salaryPayment = SalaryPayment::findOrFail($id);
+            foreach ($employees as $employee) {
+                $structure = $employee->activeSalaryStructure;
+                
+                // Create payment record
+                $payment = new SalaryPayment([
+                    'employee_id' => $employee->id,
+                    'salary_structure_id' => $structure->id,
+                    'year' => $currentYear,
+                    'month' => $currentMonth,
+                    'basic_salary' => $structure->base_salary,
+                    'allowances' => $structure->allowances,
+                    'deductions' => $structure->deductions,
+                    'net_salary' => $structure->calculateNetSalaryFromJson(),
+                    'payment_date' => now(),
+                    'status' => 'processing'
+                ]);
 
-            // Mark salary as paid and generate receipt
-            $receipt = $salaryPayment->markAsPaid($validatedData['payment_method']);
+                $payment->save();
 
-            return redirect()->route('salaries.receipts.show', $receipt->id)
-                ->with('success', 'Salary marked as paid. Receipt generated.');
+                // Generate receipt
+                $receipt = new SalaryReceipt([
+                    'salary_payment_id' => $payment->id,
+                    'generated_at' => now(),
+                    'status' => 'generated'
+                ]);
 
-        } catch (\Exception $e) {
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to mark salary as paid: ' . $e->getMessage()]);
-        }
-    }
+                $receipt->save();
+                $processed++;
+            }
 
-    public function showReceipt(SalaryReceipt $salaryReceipt)
-    {
-        // Authorize view of salary receipt
-        $this->authorize('view', $salaryReceipt);
+            DB::commit();
 
-        // Load related models
-        $salaryReceipt->load(['salaryPayment', 'employee']);
-
-        return view('salaries.receipt', compact('salaryReceipt'));
-    }
-
-    public function createSalaryStructure(Request $request)
-    {
-        // Authorize creating salary structure
-        $this->authorize('create', SalaryStructure::class);
-
-        $validatedData = $request->validate([
-            'employee_id' => 'required|exists:employees,id',
-            'base_salary' => 'required|numeric|min:0',
-            'house_rent_allowance' => 'nullable|numeric|min:0',
-            'conveyance_allowance' => 'nullable|numeric|min:0',
-            'medical_allowance' => 'nullable|numeric|min:0',
-            'performance_bonus' => 'nullable|numeric|min:0',
-            'provident_fund' => 'nullable|numeric|min:0',
-            'professional_tax' => 'nullable|numeric|min:0',
-            'other_deductions' => 'nullable|numeric|min:0'
-        ]);
-
-        try {
-            // Deactivate previous active structures
-            SalaryStructure::where('employee_id', $validatedData['employee_id'])
-                ->update(['is_active' => false]);
-
-            // Create new salary structure
-            $salaryStructure = SalaryStructure::create([
-                'employee_id' => $validatedData['employee_id'],
-                'base_salary' => $validatedData['base_salary'],
-                'house_rent_allowance' => $validatedData['house_rent_allowance'] ?? 0,
-                'conveyance_allowance' => $validatedData['conveyance_allowance'] ?? 0,
-                'medical_allowance' => $validatedData['medical_allowance'] ?? 0,
-                'performance_bonus' => $validatedData['performance_bonus'] ?? 0,
-                'provident_fund' => $validatedData['provident_fund'] ?? 0,
-                'professional_tax' => $validatedData['professional_tax'] ?? 0,
-                'other_deductions' => $validatedData['other_deductions'] ?? 0,
-                'net_salary_percentage' => 100,
-                'is_active' => true
+            return response()->json([
+                'success' => true,
+                'message' => "Successfully processed payments for {$processed} employees.",
+                'processed' => $processed
             ]);
 
-            return redirect()->route('salaries.structure.index')
-                ->with('success', 'Salary structure created successfully');
-
         } catch (\Exception $e) {
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to create salary structure: ' . $e->getMessage()]);
+            DB::rollBack();
+            \Log::error('Failed to process bulk payments: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to process payments. Please try again.',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 
-    public function listSalaryStructures(Request $request)
+    /**
+     * Display a salary payment.
+     */
+    public function showPayment(SalaryPayment $payment)
     {
-        // Authorize viewing salary structures
-        $this->authorize('viewAny', SalaryStructure::class);
-
-        $query = SalaryStructure::with('employee')
-            ->where('is_active', true);
-
-        // Optional: Add filtering logic if needed
-        if ($request->filled('employee_id')) {
-            $query->where('employee_id', $request->employee_id);
-        }
-
-        $salaryStructures = $query->paginate(15);
-
-        return view('salaries.structure.index', compact('salaryStructures'));
+        $this->authorize('view', $payment);
+        
+        $payment->load(['employee', 'receipt']);
+        
+        return view('salaries.payments.show', compact('payment'));
     }
 
-    public function createSalaryStructureForm()
+    /**
+     * Process salary payment for an employee
+     */
+    public function process(Employee $employee)
     {
-        // Authorize creating salary structure
-        $this->authorize('create', SalaryStructure::class);
-
-        $employees = Employee::where('status', 'active')->get();
-
-        return view('salaries.structure.create', compact('employees'));
-    }
-
-    public function showSalaryStructure(SalaryStructure $salaryStructure)
-    {
-        // Authorize viewing specific salary structure
-        $this->authorize('view', $salaryStructure);
-
-        return view('salaries.structure.show', compact('salaryStructure'));
-    }
-
-    public function editSalaryStructure(SalaryStructure $salaryStructure)
-    {
-        // Authorize editing salary structure
-        $this->authorize('update', $salaryStructure);
-
-        $employees = Employee::where('status', 'active')->get();
-
-        return view('salaries.structure.edit', compact('salaryStructure', 'employees'));
-    }
-
-    public function updateSalaryStructure(Request $request, SalaryStructure $salaryStructure)
-    {
-        // Authorize updating salary structure
-        $this->authorize('update', $salaryStructure);
-
-        $validatedData = $request->validate([
-            'employee_id' => 'required|exists:employees,id',
-            'base_salary' => 'required|numeric|min:0',
-            'house_rent_allowance' => 'nullable|numeric|min:0',
-            'conveyance_allowance' => 'nullable|numeric|min:0',
-            'medical_allowance' => 'nullable|numeric|min:0',
-            'performance_bonus' => 'nullable|numeric|min:0',
-            'provident_fund' => 'nullable|numeric|min:0',
-            'professional_tax' => 'nullable|numeric|min:0',
-            'other_deductions' => 'nullable|numeric|min:0'
-        ]);
-
-        try {
-            // Deactivate previous active structures for the employee
-            SalaryStructure::where('employee_id', $validatedData['employee_id'])
-                ->update(['is_active' => false]);
-
-            // Update salary structure
-            $salaryStructure->update([
-                'employee_id' => $validatedData['employee_id'],
-                'base_salary' => $validatedData['base_salary'],
-                'house_rent_allowance' => $validatedData['house_rent_allowance'] ?? 0,
-                'conveyance_allowance' => $validatedData['conveyance_allowance'] ?? 0,
-                'medical_allowance' => $validatedData['medical_allowance'] ?? 0,
-                'performance_bonus' => $validatedData['performance_bonus'] ?? 0,
-                'provident_fund' => $validatedData['provident_fund'] ?? 0,
-                'professional_tax' => $validatedData['professional_tax'] ?? 0,
-                'other_deductions' => $validatedData['other_deductions'] ?? 0,
-                'net_salary_percentage' => 100,
-                'is_active' => true
-            ]);
-
-            return redirect()->route('salaries.structure.index')
-                ->with('success', 'Salary structure updated successfully');
-
-        } catch (\Exception $e) {
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to update salary structure: ' . $e->getMessage()]);
-        }
-    }
-
-    public function destroySalaryStructure(SalaryStructure $salaryStructure)
-    {
-        // Authorize deleting salary structure
-        $this->authorize('delete', $salaryStructure);
-
-        try {
-            $salaryStructure->delete();
-
-            return redirect()->route('salaries.structure.index')
-                ->with('success', 'Salary structure deleted successfully');
-
-        } catch (\Exception $e) {
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to delete salary structure: ' . $e->getMessage()]);
-        }
-    }
-
-    public function processIndividualSalary(Employee $employee)
-    {
-        // Check if salary has already been processed for this month
-        $currentMonth = Carbon::now()->format('F');
-        $currentYear = Carbon::now()->year;
-
-        $existingSalaryPayment = SalaryPayment::where('employee_id', $employee->id)
-            ->where('month', $currentMonth)
-            ->where('year', $currentYear)
-            ->first();
-
-        // If salary has already been processed, redirect to existing receipt
-        if ($existingSalaryPayment && $existingSalaryPayment->salaryReceipt) {
-            return redirect()->route('salaries.receipt.show', $existingSalaryPayment->salaryReceipt->id)
-                ->with('info', "Salary for {$employee->full_name} has already been processed this month.");
-        }
-
-        // Proceed with salary processing form
-        $salaryPayment = new SalaryPayment([
-            'employee_id' => $employee->id,
-            'month' => $currentMonth,
-            'year' => $currentYear,
-        ]);
-
-        return view('salaries.process-form', compact('salaryPayment'));
-    }
-
-    public function processForm($salaryPaymentId)
-    {
-        // Authorize processing salaries
-        $this->authorize('processSalaries', SalaryPayment::class);
-
-        $salaryPayment = SalaryPayment::with('employee')->findOrFail($salaryPaymentId);
-
-        // Payment methods
-        $paymentMethods = [
-            'Cash' => 'Cash',
-            'Bank Transfer' => 'Bank Transfer',
-            'Cheque' => 'Cheque'
-        ];
-
-        return view('salaries.process-form', compact('salaryPayment', 'paymentMethods'));
-    }
-
-    public function storeSalaryPayment(Request $request, Employee $employee)
-    {
-        // Authorize processing individual salary
-        $this->authorize('processSalaries', SalaryPayment::class);
-
-        // Validate input
-        $validatedData = $request->validate([
-            'payment_method' => 'required|in:Cash,Bank Transfer,Cheque',
-            'payment_date' => 'required|date',
-            'remarks' => 'nullable|string|max:500'
-        ]);
-
         // Check if employee has an active salary structure
-        $salaryStructure = $employee->activeSalaryStructure;
-
-        if (!$salaryStructure) {
-            return redirect()->route('salaries.index')
-                ->withErrors(['error' => 'No active salary structure found for this employee.']);
+        $structure = $employee->activeSalaryStructure;
+        if (!$structure) {
+            return back()->with('error', 'No active salary structure found for this employee.');
         }
 
-        // Check if salary has already been processed for this month
-        $currentMonth = Carbon::now()->format('F');
-        $currentYear = Carbon::now()->year;
-
-        $existingSalaryPayment = SalaryPayment::where('employee_id', $employee->id)
-            ->where('month', $currentMonth)
+        // Check if payment for current month already exists
+        $currentMonth = now()->month;
+        $currentYear = now()->year;
+        $paymentExists = SalaryPayment::where('employee_id', $employee->id)
             ->where('year', $currentYear)
-            ->first();
+            ->where('month', $currentMonth)
+            ->exists();
 
-        if ($existingSalaryPayment && $existingSalaryPayment->salaryReceipt) {
-            return redirect()->route('salaries.receipt.show', $existingSalaryPayment->salaryReceipt->id)
-                ->with('info', "Salary for {$employee->full_name} has already been processed this month.");
+        if ($paymentExists) {
+            return back()->with('error', 'Salary payment for current month already exists.');
         }
 
         try {
             DB::beginTransaction();
 
             // Calculate salary components
-            $basicSalary = $salaryStructure->base_salary;
-            $houseRentAllowance = $salaryStructure->house_rent_allowance ?? 0;
-            $conveyanceAllowance = $salaryStructure->conveyance_allowance ?? 0;
-            $medicalAllowance = $salaryStructure->medical_allowance ?? 0;
-            $performanceBonus = $salaryStructure->performance_bonus ?? 0;
+            $basicSalary = $structure->base_salary ?? 0;
+            $allowances = json_decode($structure->allowances, true) ?? [];
+            $deductions = json_decode($structure->deductions, true) ?? [];
+            $netSalary = $basicSalary + array_sum($allowances) - array_sum($deductions);
 
-            $providentFund = $salaryStructure->provident_fund ?? 0;
-            $professionalTax = $salaryStructure->professional_tax ?? 0;
-            $otherDeductions = $salaryStructure->other_deductions ?? 0;
-
-            $totalEarnings = $basicSalary + $houseRentAllowance + $conveyanceAllowance + 
-                             $medicalAllowance + $performanceBonus;
-            $totalDeductions = $providentFund + $professionalTax + $otherDeductions;
-            $netSalary = $totalEarnings - $totalDeductions;
-
-            // Create salary payment
-            $salaryPayment = SalaryPayment::create([
+            // Create payment record
+            $payment = new SalaryPayment([
                 'employee_id' => $employee->id,
-                'month' => $currentMonth,
+                'salary_structure_id' => $structure->id,
                 'year' => $currentYear,
+                'month' => $currentMonth,
                 'basic_salary' => $basicSalary,
-                'house_rent_allowance' => $houseRentAllowance,
-                'conveyance_allowance' => $conveyanceAllowance,
-                'medical_allowance' => $medicalAllowance,
-                'performance_bonus' => $performanceBonus,
-                'provident_fund' => $providentFund,
-                'professional_tax' => $professionalTax,
-                'other_deductions' => $otherDeductions,
-                'allowances' => $houseRentAllowance + $conveyanceAllowance + $medicalAllowance + $performanceBonus,
-                'deductions' => $totalDeductions,
+                'allowances' => json_encode($allowances),
+                'deductions' => json_encode($deductions),
                 'net_salary' => $netSalary,
-                'payment_method' => $validatedData['payment_method'],
-                'payment_date' => $validatedData['payment_date'],
-                'status' => 'Paid',
-                'remarks' => $validatedData['remarks'] ?? null
+                'payment_date' => now(),
+                'status' => 'processing'
             ]);
 
-            // Generate unique receipt number
-            $receiptNumber = 'SR-' . now()->format('Ym') . '-' . str_pad($salaryPayment->id, 5, '0', STR_PAD_LEFT);
+            $payment->save();
 
-            // Create salary receipt
-            $salaryReceipt = SalaryReceipt::create([
-                'salary_payment_id' => $salaryPayment->id,
-                'employee_id' => $employee->id,
-                'receipt_number' => $receiptNumber,
-                'total_earnings' => $netSalary,
-                'total_deductions' => $totalDeductions,
-                'net_salary' => $netSalary,
-                'payment_date' => $validatedData['payment_date'],
-                'payment_method' => $validatedData['payment_method'],
-                'remarks' => $validatedData['remarks'] ?? null
+            // Generate receipt
+            $receipt = new SalaryReceipt([
+                'salary_payment_id' => $payment->id,
+                'receipt_number' => SalaryReceipt::generateReceiptNumber(),
+                'generated_at' => now(),
+                'status' => 'generated',
+                'generated_by' => auth()->id()
+            ]);
+
+            $receipt->save();
+
+            DB::commit();
+
+            return redirect()
+                ->route('salaries.payments.show', $payment)
+                ->with('success', 'Salary payment processed successfully.');
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error processing salary payment: ' . $e->getMessage());
+
+            return back()->with('error', 'Error processing salary payment. Please try again.');
+        }
+    }
+
+    /**
+     * Display the specified salary payment.
+     */
+    public function show(SalaryPayment $payment)
+    {
+        $this->authorize('view', $payment);
+        
+        return view('salaries.payments.show', compact('payment'));
+    }
+
+    /**
+     * Store a newly created salary structure
+     */
+    public function structureStore(Request $request)
+    {
+        $this->authorize('create', SalaryStructure::class);
+
+        try {
+            DB::beginTransaction();
+
+            // Validate request
+            $validated = $request->validate([
+                'employee_id' => 'required|exists:employees,id',
+                'base_salary' => 'required|numeric|min:0',
+                'hourly_rate' => 'required|numeric|min:0',
+                'overtime_rate' => 'required|numeric|min:0',
+                'bonus_percentage' => 'required|numeric|min:0',
+                'house_rent' => 'nullable|numeric|min:0',
+                'conveyance' => 'nullable|numeric|min:0',
+                'medical' => 'nullable|numeric|min:0',
+                'performance_bonus' => 'nullable|numeric|min:0',
+                'provident_fund' => 'nullable|numeric|min:0',
+                'professional_tax' => 'nullable|numeric|min:0',
+                'other' => 'nullable|numeric|min:0'
+            ]);
+
+            // Deactivate any existing active salary structure
+            SalaryStructure::where('employee_id', $validated['employee_id'])
+                ->where('is_active', true)
+                ->update(['is_active' => false]);
+
+            // Format allowances and deductions as JSON
+            $allowances = [
+                'house_rent' => $request->house_rent,
+                'conveyance' => $request->conveyance,
+                'medical' => $request->medical,
+                'performance_bonus' => $request->performance_bonus
+            ];
+
+            $deductions = [
+                'provident_fund' => $request->provident_fund,
+                'professional_tax' => $request->professional_tax,
+                'other' => $request->other
+            ];
+
+            // Create new salary structure
+            $salaryStructure = SalaryStructure::create([
+                'employee_id' => $validated['employee_id'],
+                'base_salary' => $validated['base_salary'],
+                'hourly_rate' => $validated['hourly_rate'],
+                'overtime_rate' => $validated['overtime_rate'],
+                'bonus_percentage' => $validated['bonus_percentage'],
+                'allowances' => json_encode($allowances),
+                'deductions' => json_encode($deductions),
+                'is_active' => true,
+                'effective_date' => now()->toDateString()
             ]);
 
             DB::commit();
 
-            // Redirect to receipt view
-            return redirect()->route('salaries.receipt.show', $salaryReceipt->id)
-                ->with('success', "Salary processed for {$employee->full_name}");
+            return redirect()
+                ->route('salaries.structure.show', $salaryStructure)
+                ->with('success', 'Salary structure created successfully.');
 
         } catch (\Exception $e) {
             DB::rollBack();
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to process salary: ' . $e->getMessage()]);
+            Log::error('Error creating salary structure: ' . $e->getMessage());
+            
+            return back()
+                ->withInput()
+                ->with('error', 'Error creating salary structure. Please try again.');
         }
     }
 
-    public function storeSalaryPaymentOld(Request $request, $salaryPaymentId)
+    /**
+     * Show a salary structure's details
+     */
+    public function structureShow(SalaryStructure $structure)
     {
-        // Authorize processing salaries
-        $this->authorize('processSalaries', SalaryPayment::class);
+        $this->authorize('view', $structure);
 
-        $validatedData = $request->validate([
-            'payment_method' => 'required|in:Cash,Bank Transfer,Cheque',
-            'payment_date' => 'required|date',
-            'remarks' => 'nullable|string|max:500'
-        ]);
+        $employee = $structure->employee;
+        $allowances = json_decode($structure->allowances, true);
+        $deductions = json_decode($structure->deductions, true);
 
-        try {
-            $salaryPayment = SalaryPayment::findOrFail($salaryPaymentId);
+        $totalAllowances = array_sum($allowances);
+        $totalDeductions = array_sum($deductions);
+        $netSalary = $structure->base_salary + $totalAllowances - $totalDeductions;
 
-            // Update payment details
-            $salaryPayment->payment_method = $validatedData['payment_method'];
-            $salaryPayment->payment_date = $validatedData['payment_date'];
-            $salaryPayment->remarks = $validatedData['remarks'] ?? null;
-            $salaryPayment->status = 'Paid';
-            $salaryPayment->save();
-
-            // Generate receipt
-            $receipt = SalaryReceipt::create([
-                'salary_payment_id' => $salaryPayment->id,
-                'employee_id' => $salaryPayment->employee_id,
-                'amount' => $salaryPayment->net_salary,
-                'payment_method' => $salaryPayment->payment_method,
-                'payment_date' => $salaryPayment->payment_date
-            ]);
-
-            return redirect()->route('salaries.index')
-                ->with('success', "Salary for {$salaryPayment->employee->full_name} processed and paid successfully.");
-
-        } catch (\Exception $e) {
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to store salary payment: ' . $e->getMessage()]);
-        }
+        return view('salaries.structure.show', compact(
+            'structure',
+            'employee',
+            'allowances',
+            'deductions',
+            'totalAllowances',
+            'totalDeductions',
+            'netSalary'
+        ));
     }
 
-    // Salary Structure Methods
-    public function structureIndex()
-    {
-        $this->authorize('viewAny', SalaryStructure::class);
-        return $this->listSalaryStructures(request());
-    }
-
-    public function structureCreate()
-    {
-        $this->authorize('create', SalaryStructure::class);
-        return $this->createSalaryStructureForm();
-    }
-
-    public function structureStore(Request $request)
-    {
-        $this->authorize('create', SalaryStructure::class);
-        return $this->createSalaryStructure($request);
-    }
-
+    /**
+     * Show form to edit salary structure
+     */
     public function structureEdit(SalaryStructure $structure)
     {
         $this->authorize('update', $structure);
-        $employees = Employee::where('status', 'active')->get();
-        return view('salaries.structure.edit', compact('structure', 'employees'));
+
+        $employee = $structure->employee;
+        $allowances = json_decode($structure->allowances, true);
+        $deductions = json_decode($structure->deductions, true);
+
+        $totalAllowances = array_sum($allowances);
+        $totalDeductions = array_sum($deductions);
+        $totalEarnings = $structure->base_salary + $totalAllowances;
+        $netSalary = $totalEarnings - $totalDeductions;
+
+        return view('salaries.structure.edit', compact(
+            'structure',
+            'employee',
+            'allowances',
+            'deductions',
+            'totalAllowances',
+            'totalDeductions',
+            'totalEarnings',
+            'netSalary'
+        ));
     }
 
+    /**
+     * Update salary structure
+     */
     public function structureUpdate(Request $request, SalaryStructure $structure)
     {
         $this->authorize('update', $structure);
-        
-        $validatedData = $request->validate([
-            'base_salary' => 'required|numeric|min:0',
-            'house_rent_allowance' => 'nullable|numeric|min:0',
-            'conveyance_allowance' => 'nullable|numeric|min:0',
-            'medical_allowance' => 'nullable|numeric|min:0',
-            'performance_bonus' => 'nullable|numeric|min:0',
-            'provident_fund' => 'nullable|numeric|min:0',
-            'professional_tax' => 'nullable|numeric|min:0',
-            'other_deductions' => 'nullable|numeric|min:0'
-        ]);
 
         try {
-            $structure->update([
-                'base_salary' => $validatedData['base_salary'],
-                'house_rent_allowance' => $validatedData['house_rent_allowance'] ?? 0,
-                'conveyance_allowance' => $validatedData['conveyance_allowance'] ?? 0,
-                'medical_allowance' => $validatedData['medical_allowance'] ?? 0,
-                'performance_bonus' => $validatedData['performance_bonus'] ?? 0,
-                'provident_fund' => $validatedData['provident_fund'] ?? 0,
-                'professional_tax' => $validatedData['professional_tax'] ?? 0,
-                'other_deductions' => $validatedData['other_deductions'] ?? 0
+            DB::beginTransaction();
+
+            // Validate request
+            $validated = $request->validate([
+                'base_salary' => 'required|numeric|min:0',
+                'hourly_rate' => 'required|numeric|min:0',
+                'overtime_rate' => 'required|numeric|min:0',
+                'bonus_percentage' => 'required|numeric|min:0',
+                'house_rent' => 'nullable|numeric|min:0',
+                'conveyance' => 'nullable|numeric|min:0',
+                'medical' => 'nullable|numeric|min:0',
+                'performance_bonus' => 'nullable|numeric|min:0',
+                'provident_fund' => 'nullable|numeric|min:0',
+                'professional_tax' => 'nullable|numeric|min:0',
+                'other' => 'nullable|numeric|min:0'
             ]);
 
-            return redirect()->route('salaries.structure.index')
-                ->with('success', 'Salary structure updated successfully');
+            // Format allowances and deductions as JSON
+            $allowances = [
+                'house_rent' => $request->house_rent,
+                'conveyance' => $request->conveyance,
+                'medical' => $request->medical,
+                'performance_bonus' => $request->performance_bonus
+            ];
+
+            $deductions = [
+                'provident_fund' => $request->provident_fund,
+                'professional_tax' => $request->professional_tax,
+                'other' => $request->other
+            ];
+
+            // Update salary structure
+            $structure->update([
+                'base_salary' => $validated['base_salary'],
+                'hourly_rate' => $validated['hourly_rate'],
+                'overtime_rate' => $validated['overtime_rate'],
+                'bonus_percentage' => $validated['bonus_percentage'],
+                'allowances' => json_encode($allowances),
+                'deductions' => json_encode($deductions)
+            ]);
+
+            DB::commit();
+
+            return redirect()
+                ->route('salaries.structure.show', $structure)
+                ->with('success', 'Salary structure updated successfully.');
 
         } catch (\Exception $e) {
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to update salary structure: ' . $e->getMessage()]);
+            DB::rollBack();
+            Log::error('Error updating salary structure: ' . $e->getMessage());
+            
+            return back()
+                ->withInput()
+                ->with('error', 'Error updating salary structure. Please try again.');
         }
     }
 
-    public function structureDestroy(SalaryStructure $structure)
+    /**
+     * Download salary receipt
+     */
+    public function downloadReceipt(SalaryReceipt $receipt)
     {
-        $this->authorize('delete', $structure);
+        $this->authorize('view', $receipt->salaryPayment);
 
-        try {
-            $structure->update(['is_active' => false]);
-            return redirect()->route('salaries.structure.index')
-                ->with('success', 'Salary structure deactivated successfully');
-        } catch (\Exception $e) {
-            return redirect()->back()
-                ->withErrors(['error' => 'Failed to deactivate salary structure: ' . $e->getMessage()]);
-        }
+        $payment = $receipt->salaryPayment;
+        $employee = $payment->employee;
+
+        // Return view for now, we'll implement PDF download later
+        return view('salaries.receipts.show', [
+            'receipt' => $receipt,
+            'payment' => $payment,
+            'employee' => $employee
+        ]);
     }
 
-    public function report()
+    /**
+     * Generate PDF for salary receipt
+     */
+    private function generateReceiptPDF(SalaryReceipt $receipt)
     {
-        // Authorize viewing salary reports
-        $this->authorize('viewAny', SalaryStructure::class);
+        $payment = $receipt->salaryPayment;
+        $employee = $payment->employee;
 
-        // Get date range
-        $startDate = now()->startOfMonth();
-        $endDate = now()->endOfMonth();
-        $startMonth = $startDate->format('F');
-        $endMonth = $endDate->format('F');
-        $startYear = $startDate->year;
-        $endYear = $endDate->year;
+        $pdf = PDF::loadView('salaries.receipts.pdf', [
+            'receipt' => $receipt,
+            'payment' => $payment,
+            'employee' => $employee
+        ]);
 
-        // Get salary payments for the current month
-        $salaryPayments = SalaryPayment::with(['employee'])
-            ->whereBetween('created_at', [$startDate, $endDate])
-            ->get();
-
-        // Calculate total payroll
-        $totalPayroll = $salaryPayments->sum('net_salary');
-        $totalEmployeesPaid = $salaryPayments->count();
-
-        // Get role-wise salary statistics
-        $roleSalaries = DB::table('salary_payments')
-            ->join('employees', 'salary_payments.employee_id', '=', 'employees.id')
-            ->whereBetween('salary_payments.created_at', [$startDate, $endDate])
-            ->select(
-                'employees.role',
-                DB::raw('SUM(salary_payments.net_salary) as total_salary'),
-                DB::raw('AVG(salary_payments.net_salary) as average_salary'),
-                DB::raw('COUNT(DISTINCT employees.id) as employee_count')
-            )
-            ->groupBy('employees.role')
-            ->get();
-
-        // Get detailed salary information
-        $salaryDetails = DB::table('salary_payments')
-            ->join('employees', 'salary_payments.employee_id', '=', 'employees.id')
-            ->join('salary_structures', function($join) {
-                $join->on('employees.id', '=', 'salary_structures.employee_id')
-                    ->where('salary_structures.is_active', '=', true);
-            })
-            ->whereBetween('salary_payments.created_at', [$startDate, $endDate])
-            ->select(
-                DB::raw("CONCAT(employees.first_name, ' ', employees.last_name) as employee_name"),
-                'employees.role as employee_role',
-                'salary_structures.base_salary',
-                DB::raw('salary_payments.allowances as overtime_pay'),
-                'salary_payments.deductions as total_deductions',
-                'salary_payments.net_salary'
-            )
-            ->get();
-
-        return view('salaries.report', compact(
-            'totalPayroll',
-            'startMonth',
-            'endMonth',
-            'startYear',
-            'endYear',
-            'totalEmployeesPaid',
-            'roleSalaries',
-            'salaryDetails'
-        ));
+        return $pdf;
     }
 }

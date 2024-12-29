@@ -20,8 +20,6 @@ class AuthServiceProvider extends ServiceProvider
      */
     protected $policies = [
         SalaryPayment::class => SalaryPaymentPolicy::class,
-        SalaryStructure::class => SalaryStructurePolicy::class,
-        SalaryReceipt::class => SalaryReceiptPolicy::class,
     ];
 
     /**

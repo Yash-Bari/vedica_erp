@@ -42,12 +42,11 @@
                 </div>
 
                 <div>
-                    <label for="phone_number" class="block text-sm font-medium text-gray-700">Phone Number *</label>
-                    <input id="phone_number" name="phone_number" type="tel" required 
+                    <label for="phone" class="block text-sm font-medium text-gray-700">Phone Number *</label>
+                    <input id="phone" name="phone" type="text" required 
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200" 
-                           value="{{ old('phone_number') }}"
-                           pattern="[6-9]\d{9}">
-                    @error('phone_number')
+                           value="{{ old('phone') }}">
+                    @error('phone')
                         <p class="text-red-500 text-xs mt-1">{{ $message }}</p>
                     @enderror
                 </div>

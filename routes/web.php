@@ -126,33 +126,40 @@ Route::middleware(['auth'])->group(function () {
         Route::resource('expenses', ExpenseController::class);
 
         // Invoice Management
-        Route::get('invoices/report', [InvoiceController::class, 'report'])->name('invoices.report');
         Route::resource('invoices', InvoiceController::class);
-        Route::post('invoices/{invoice}/send', [InvoiceController::class, 'sendInvoice'])->name('invoices.send');
         Route::post('invoices/{invoice}/payment', [InvoiceController::class, 'recordPayment'])->name('invoices.record-payment');
         Route::get('projects/{project}/invoice-details', [InvoiceController::class, 'fetchProjectDetails'])->name('projects.invoice-details');
 
-        // Salary Management
+        // Salary Management Routes
         Route::prefix('salaries')->name('salaries.')->group(function () {
-            Route::get('/report', [SalaryController::class, 'report'])->name('report');
-            Route::get('/receipts/{receipt}', [SalaryController::class, 'showReceipt'])->name('receipts.show');
-            Route::get('/{employee}/process', [SalaryController::class, 'processSalary'])->name('process');
-            Route::post('/bulk-pay', [SalaryController::class, 'bulkPay'])->name('bulk-pay');
+            Route::get('/', [SalaryController::class, 'index'])->name('index');
+            
+            // Salary structure routes
+            Route::prefix('structure')->name('structure.')->group(function () {
+                Route::get('/', [SalaryController::class, 'structureIndex'])->name('index');
+                Route::get('/create/{employee}', [SalaryController::class, 'structureCreate'])->name('create');
+                Route::post('/', [SalaryController::class, 'structureStore'])->name('store');
+                Route::get('/{structure}', [SalaryController::class, 'structureShow'])->name('show');
+                Route::get('/{structure}/edit', [SalaryController::class, 'structureEdit'])->name('edit');
+                Route::put('/{structure}', [SalaryController::class, 'structureUpdate'])->name('update');
+                Route::delete('/{structure}', [SalaryController::class, 'structureDestroy'])->name('destroy');
+            });
+
+            // Salary payment routes
+            Route::prefix('payments')->name('payments.')->group(function () {
+                Route::get('/', [SalaryController::class, 'paymentsIndex'])->name('index');
+                Route::get('/process/{employee}', [SalaryController::class, 'process'])->name('process');
+                Route::get('/{payment}', [SalaryController::class, 'show'])->name('show');
+            });
+
+            // Salary receipt routes
+            Route::prefix('receipts')->name('receipt.')->group(function () {
+                Route::get('/{receipt}', [SalaryController::class, 'downloadReceipt'])->name('show');
+            });
         });
-        Route::resource('salaries', SalaryController::class)->except(['show']);
-        
-        // Salary Structure Routes
-        Route::get('salary-structures', [SalaryController::class, 'structureIndex'])->name('salaries.structure.index');
-        Route::get('salary-structures/create', [SalaryController::class, 'structureCreate'])->name('salaries.structure.create');
-        Route::post('salary-structures', [SalaryController::class, 'structureStore'])->name('salaries.structure.store');
-        Route::get('salary-structures/{structure}/edit', [SalaryController::class, 'structureEdit'])->name('salaries.structure.edit');
-        Route::put('salary-structures/{structure}', [SalaryController::class, 'structureUpdate'])->name('salaries.structure.update');
-        Route::delete('salary-structures/{structure}', [SalaryController::class, 'structureDestroy'])->name('salaries.structure.destroy');
 
         // Financial Dashboard and Analytics
         Route::get('dashboard', [FinancialDashboardController::class, 'index'])->name('financial.dashboard');
-        Route::get('analytics', [FinancialAnalyticsController::class, 'index'])->name('financial.analytics');
-        Route::get('analytics/export', [FinancialAnalyticsController::class, 'export'])->name('financial.analytics.export');
     });
 });
 

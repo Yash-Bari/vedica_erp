@@ -28,6 +28,7 @@ class DefaultAdminSeeder extends Seeder
             [
                 'first_name' => 'Vedica',
                 'last_name' => 'Admin',
+                'employee_code' => 'EMP001',
                 'password' => Hash::make('VedicaAdmin2024!'),
                 'role' => 'Admin',
                 'status' => 'Active',

@@ -13,43 +13,34 @@ class SalaryPayment extends Model
     protected $table = 'salary_payments';
 
     protected $fillable = [
-        'employee_id', 
-        'year', 
-        'month', 
-        'basic_salary', 
-        'allowances', 
-        'deductions', 
-        'net_salary', 
-        'payment_date', 
-        'payment_method', 
-        'status',
-        'salary_structure_id'
+        'employee_id',
+        'salary_structure_id',
+        'year',
+        'month',
+        'basic_salary',
+        'allowances',
+        'deductions',
+        'net_salary',
+        'payment_date',
+        'status'
     ];
 
     protected $casts = [
-        'payment_date' => 'date',
-        'basic_salary' => 'float',
-        'allowances' => 'float',
-        'deductions' => 'float',
-        'net_salary' => 'float'
+        'allowances' => 'json',
+        'deductions' => 'json',
+        'payment_date' => 'datetime'
     ];
 
     // Relationship with Employee model
     public function employee()
     {
-        return $this->belongsTo(Employee::class, 'employee_id');
+        return $this->belongsTo(Employee::class);
     }
 
     // Relationship with SalaryStructure
     public function salaryStructure()
     {
         return $this->belongsTo(SalaryStructure::class);
-    }
-
-    // Relationship with SalaryReceipt
-    public function salaryReceipt()
-    {
-        return $this->hasOne(SalaryReceipt::class, 'salary_payment_id');
     }
 
     // Relationship with SalaryReceipt

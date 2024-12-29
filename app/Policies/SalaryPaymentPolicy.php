@@ -55,4 +55,20 @@ class SalaryPaymentPolicy
     {
         return $user->hasRole(['admin', 'finance']);
     }
+
+    /**
+     * Determine whether the user can create models.
+     */
+    public function create(User $user): bool
+    {
+        return $user->hasRole('admin') || $user->hasRole('finance');
+    }
+
+    /**
+     * Determine whether the user can process bulk payments.
+     */
+    public function processBulk(User $user): bool
+    {
+        return $user->hasRole('admin') || $user->hasRole('finance');
+    }
 }
